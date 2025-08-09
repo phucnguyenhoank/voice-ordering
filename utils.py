@@ -68,3 +68,12 @@ def llama(prompt,
     print(f"Tried {max_tries} times to make API call to get a valid response object")
     print("Returning provided response")
     return response
+
+def llama_chat(prompt, 
+               model="llama3.1", 
+               stream=False,
+               messages=[],
+               tools=[],
+               temperature=0.0, 
+               seed=0):
+    pass
