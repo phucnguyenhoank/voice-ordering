@@ -1,14 +1,10 @@
-import requests
+from fcall import get_menu
+def calculate_total(items: list[dict]):
+    print(items)
+    for item_order in items:
+        print(item_order)
 
-response = requests.post(
-    'http://localhost:11434/api/generate',
-    json={
-        'model': 'llama3.1',
-        'prompt': 'What is the capital of japan?',
-        'stream': False
-    }
-)
-
-for line in response.iter_lines():
-    if line:
-        print(line.decode('utf-8'))
+arguments = {
+                        "items": "[{\"name\": \"Coke\", \"quantity\": 2}]"
+                    }
+calculate_total(**arguments)
