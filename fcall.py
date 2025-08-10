@@ -160,6 +160,22 @@ default_tools = [
     {
         "type": "function",
         "function": {
+            "name": "get_menu",
+            "description": "Get the current fast food menu, optionally filtered by category.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional menu category: 'Burgers', 'Sides', or 'Drinks'"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "calculate_total",
             "description": "Calculates the total price for a list of items and applies discounts. The item used to calculate must exist in the current menu. Use this to show the customer the order details before they confirm.",
             "parameters": {

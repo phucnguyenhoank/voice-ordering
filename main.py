@@ -1,10 +1,21 @@
-from fcall import get_menu
-def calculate_total(items: list[dict]):
-    print(items)
-    for item_order in items:
-        print(item_order)
+import sys
+import os
+import logging
 
-arguments = {
-                        "items": "[{\"name\": \"Coke\", \"quantity\": 2}]"
-                    }
-calculate_total(**arguments)
+logging.basicConfig(level=logging.INFO)
+# sys.path.append(os.path.abspath("../my_tts_module"))
+
+from tts import TextToSpeech
+
+tts = TextToSpeech()
+messages = [
+    "Can I help you?",
+    "What would you like to eat?",
+    "This is a third test message."
+]
+
+for msg in messages:
+    try:
+        tts.text_to_speech(msg)
+    except Exception as e:
+        logging.error(f"Error for '{msg}': {e}")
