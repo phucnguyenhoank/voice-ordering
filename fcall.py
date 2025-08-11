@@ -23,7 +23,7 @@ data = {
     ],
     "discounts": [
         {"discount_percentage": 0.10, "item_ids": [1, 4]},
-        {"discount_percentage": 0.05, "item_ids": [3]},
+        # {"discount_percentage": 0.05, "item_ids": [3]},
         {"discount_percentage": 0.20, "item_ids": [5]}
     ]
 }
@@ -227,7 +227,7 @@ if __name__ == "__main__":
                     "properties": {
                         "order": {
                             "type": "array",
-                            "description": "Confirmed list of items to persist to disk.",
+                            "description": "Confirmed list of items to persist to disk. Must have at least 1 item, each with item_id and quantity > 0.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -249,20 +249,18 @@ if __name__ == "__main__":
 
     system_prompt = f"""
     You are a friendly and efficient fast-food restaurant receptionist that takes quick order conversations.
-    Your job is to take customer orders, offer suggestions, and direct them to the next step.
+    Your job is to take customer orders, offer suggestions to what they want based on the menu, after you are sure with the items in the menu that customers want, create an order and direct them to the next step.
 
-    Here are your instructions:
-    - Greet the customer and ask their order.
-    - Suggest items: recommend popular or complementary menu items from the MENU if asked.
+    Here are your detailed instructions:
+    - Greet the customer and ask their order for creation.
+    - Suggest items: recommend popular or complementary menu items as well as the existing discounts from the `MENU` if asked.
     - Show details: Use the 'get_menu' tool (parameter 'category_ids' is optional) to look up menu items.
-    - Preview order totals: Use the 'calculate_total' tool to compute and show order_details, subtotal, discounts_applied, and total_price. **calculate_total is read-only and must NOT save files.**
-    - Ask for confirmation: After showing the preview, ask the customer whether they want to confirm the order.
+    - Preview order totals: Use the 'calculate_total' tool to compute order_details, subtotal, discounts_applied (don't bother the discounts_applied if it is zero), and total_price, and then show to the customer. **calculate_total is read-only and must NOT save files.**
+    - ALWAYS ask for confirmation from the customer about the order you want to create: After showing the preview, ask the customer whether they want to confirm the order, if they want to add more, add those new items to the previous ones they requested and call the 'calculate_total' tool again until the users are sure about what they want from your `MENU`.
     - Finalize the order: Only after the customer explicitly confirms (e.g. "yes", "confirm", "place order") call 'create_order' to save the order and return an order_id and created_at. Then thank the customer and direct them to the payment window.
+    - Please confirm the exact items in the order. Make sure there is at least one item when create the order.
+    Always use only the `MENU` items (IDs from the `MENU`) when making totals.
 
-    Always use only the MENU items (IDs from the MENU) when making totals.
-
-    Here is the `MENU`:
-    {MENU_DATA}
     """
 
     # 3) messages: 1-shot example that shows the preview -> confirmation -> create flow
@@ -272,52 +270,130 @@ if __name__ == "__main__":
         # 1-shot example starts
         {"role": "assistant", "content": greeting_prompt},
         {"role": "user", "content": "I want 2 Burgers please"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "get_menu", "arguments":{"category_ids": "[1]"}}}
+        ]},
         {"role": "assistant", "content": "We have Veggie Burger $5.49 and Cheeseburger $5.99. We are having 10% discount on Cheeseburger. What would you like?"},
         {"role": "user", "content": "2 cheeseburgers please"},
         {"role": "assistant", "content": "Ok, would you like some drinks? We are having 10% off on Coca-Cola and 20% off on Orange Juice."},
+        {"role": "user", "content": "yes, 1 Coke"},
+        {"role": "assistant", "content": "Got it, would you like some sides? We are having some delicious French Fries."},
         {"role": "user", "content": "no"},
 
         # Assistant calls calculate_total for a preview (read-only)
         {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}])}}}
+            {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])}}}
         ]},
 
         # Tool returns preview (no order_id yet)
         {"role": "tool", "name": "calculate_total", "content": json.dumps({
             "order_details": [
-                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2}
+                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
+                {
+                    "item_id": 4,
+                    "name": "Coca-Cola",
+                    "quantity": 1,
+                    "price_per_item": 1.49,
+                    "line_total": 1.49,
+                    "line_discount": 0.15,
+                    "discount_pct": 0.1
+                }
             ],
-            "subtotal": 11.98,
-            "discounts_applied": [{"description": "10% off on Cheeseburger", "amount": -1.2}],
-            "total_price": 10.78
+            "subtotal": 13.47,
+            "discounts_applied": [
+                {"description": "10% off on Cheeseburger", "amount": -1.2},
+                {
+                    "description": "10% off on Coca-Cola",
+                    "amount": -0.15
+                }],
+            "total_price": 12.12
         })},
 
         # Assistant shows preview and asks for confirmation
-        {"role": "assistant", "content": "Here is your order preview: 2 x Cheeseburger. Subtotal $11.98, discounts applied $1.20, total $10.78. Would you like to confirm and place this order? (yes/no)"},
+        {"role": "assistant", "content": "Here is your order preview: 2 x Cheeseburger, 1 x Coca-Cola. Subtotal $13.47, discounts applied $1.35, total $12.12. Would you like to confirm and place this order?"},
+
+        {"role": "user", "content": "I changed my mind, I don't like Coke any more, take the Orange Juice instead"},
+
+        #---------------
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
+        ]},
+
+        # Tool returns preview (no order_id yet)
+        {"role": "tool", "name": "calculate_total", "content": json.dumps({
+            "order_details": [
+                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
+                {
+                    "item_id": 5,
+                    "name": "Orange Juice",
+                    "quantity": 1,
+                    "price_per_item": 1.99,
+                    "line_total": 1.99,
+                    "line_discount": 0.4,
+                    "discount_pct": 0.2
+                }
+            ],
+            "subtotal": 13.97,
+            "discounts_applied": [
+                {"description": "10% off on Cheeseburger", "amount": -1.2},
+                {
+                    "description": "20% off on Orange Juice",
+                    "amount": -0.4
+                }],
+            "total_price": 12.37
+        })},
+        {"role": "assistant", "content": "Great, here is your order preview: 2 x Cheeseburger, 1 x Orange Juice. Subtotal $13.97, discounts applied $1.6, total $12.37. Would you like to confirm and place this order?"},
+        # ---------------------
 
         # User confirms
         {"role": "user", "content": "Yes, please confirm"},
 
         # Assistant calls create_order to finalize (tool that saves)
         {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "create_order", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}])}}}
+            {"function": {"name": "create_order", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
         ]},
 
         # Tool returns saved order metadata
         {"role": "tool", "name": "create_order", "content": json.dumps({
             "order_details": [
-                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2}
+                {
+                    "item_id": 1,
+                    "name": "Cheeseburger",
+                    "quantity": 2,
+                    "price_per_item": 5.99,
+                    "line_total": 11.98,
+                    "line_discount": 1.2,
+                    "discount_pct": 0.1
+                },
+                {
+                    "item_id": 5,
+                    "name": "Orange Juice",
+                    "quantity": 1,
+                    "price_per_item": 1.99,
+                    "line_total": 1.99,
+                    "line_discount": 0.4,
+                    "discount_pct": 0.2
+                }
             ],
-            "subtotal": 11.98,
-            "discounts_applied": [{"description": "10% off on Cheeseburger", "amount": -1.2}],
-            "total_price": 10.78,
-            "order_id": "example_order_id",
-            "created_at": "2025-08-11T00:00:00",
-            "saved_as": "orders/order_example_order_id.csv"
+            "subtotal": 13.97,
+            "discounts_applied": [
+                {
+                    "description": "10% off on Cheeseburger",
+                    "amount": -1.2
+                },
+                {
+                    "description": "20% off on Orange Juice",
+                    "amount": -0.4
+                }
+            ],
+            "total_price": 12.37,
+            "order_id": "87137e055d20459aace8a216ad76cd70",
+            "created_at": "2025-08-11T16:16:28.192600",
+            "saved_as": "orders\\order_87137e055d20459aace8a216ad76cd70.csv"
         })},
 
         # Assistant finalizes message
-        {"role": "assistant", "content": "Great — your order was created with ID example_order_id: 2 Cheeseburgers. With 10% off, you pay $10.78. Thank you and please proceed to the payment window."}
+        {"role": "assistant", "content": "Great — your order was created with ID 87137e055d20459aace8a216ad76cd70: 2 Cheeseburgers and 1 Orange Juice. With $1.6 discount, you pay $10.78. Thank you and please proceed to the payment window."}
         # 1-shot example ends
     ]
     # -----------------------------------------------------------------
@@ -363,6 +439,8 @@ if __name__ == "__main__":
                 })
 
             followup = llama(messages=messages, tools=default_tools)
+            print(json.dumps(followup, indent=4))
+
             print_content(followup["message"])
             messages.append(followup["message"])
         else:
