@@ -29,6 +29,47 @@ data = {
 }
 MENU_DATA = copy.deepcopy(data)
 
+# The customer cart is stored globally for simplicity
+cart = []
+
+def add_or_update_cart_items(items):
+    """
+    Add new items to the cart or update quantities if they already exist.
+    items: list of dicts, e.g. [{"item_id": 1, "quantity": 2}, ...]
+    """
+    global cart
+    for new_item in items:
+        for cart_item in cart:
+            if cart_item["item_id"] == new_item["item_id"]:
+                cart_item["quantity"] += new_item["quantity"]
+                break
+        else:
+            cart.append({"item_id": new_item["item_id"], "quantity": new_item["quantity"]})
+
+
+def remove_cart_items(item_ids):
+    """
+    Remove items from the cart by item_id.
+    item_ids: list of integers, e.g. [1, 5]
+    """
+    global cart
+    cart = [item for item in cart if item["item_id"] not in item_ids]
+
+
+def set_cart_item_quantities(items):
+    """
+    Set new quantities for existing items in the cart.
+    items: list of dicts, e.g. [{"item_id": 1, "quantity": 5}, ...]
+    """
+    global cart
+    for change_item in items:
+        for cart_item in cart:
+            if cart_item["item_id"] == change_item["item_id"]:
+                cart_item["quantity"] = change_item["quantity"]
+                break
+
+    
+
 def _load_order(order):
     """Accept list or JSON string and return list of dicts."""
     if isinstance(order, str):
@@ -171,9 +212,9 @@ def print_content(message):
     print(f"{role}> {content}")
 
 if __name__ == "__main__":
-    # ----------------- Replace these three variables -----------------
+    # ----------------- Replace these five variables -----------------
 
-    # 1) default_tools: explicit, non-ambiguous tool schema
+    # 1) default_tools: explicit, non-ambiguous tool schema including cart ops
     default_tools = [
         {
             "type": "function",
@@ -195,19 +236,91 @@ if __name__ == "__main__":
         {
             "type": "function",
             "function": {
+                "name": "add_or_update_cart_items",
+                "description": "Add items to the current cart or increase quantity if item exists. Returns the updated cart. Items must include item_id and quantity (>0).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "description": "List of items to add or update in cart.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "item_id": {"type": "integer"},
+                                    "quantity": {"type": "integer", "minimum": 1}
+                                },
+                                "required": ["item_id", "quantity"]
+                            }
+                        }
+                    },
+                    "required": ["items"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "remove_cart_items",
+                "description": "Remove one or more items from the cart by their item_id. Returns the updated cart.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "item_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {"type": "integer"},
+                            "description": "List of item IDs to remove from the cart."
+                        }
+                    },
+                    "required": ["item_ids"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "set_cart_item_quantities",
+                "description": "Set new quantities for existing items in the cart (replace). Returns the updated cart. Quantity must be >=1.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "item_id": {"type": "integer"},
+                                    "quantity": {"type": "integer", "minimum": 1}
+                                },
+                                "required": ["item_id", "quantity"]
+                            },
+                            "description": "List of item_id/quantity pairs to set in cart."
+                        }
+                    },
+                    "required": ["items"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "calculate_total",
-                "description": "Read-only preview: returns order_details, subtotal, discounts_applied and total_price. Does NOT save files.",
+                "description": "Read-only preview: compute order_details, subtotal, discounts_applied and total_price for the provided order (list of item_id/quantity). Does NOT save files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "order": {
                             "type": "array",
-                            "description": "List of items to order (preview only).",
+                            "minItems": 1,
+                            "description": "List of items to compute totals for (preview only).",
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "item_id": {"type": "integer", "description": "ID of the menu item."},
-                                    "quantity": {"type": "integer", "description": "Number of this item to order."}
+                                    "item_id": {"type": "integer"},
+                                    "quantity": {"type": "integer", "minimum": 1}
                                 },
                                 "required": ["item_id", "quantity"]
                             }
@@ -221,18 +334,19 @@ if __name__ == "__main__":
             "type": "function",
             "function": {
                 "name": "create_order",
-                "description": "Save a confirmed order to CSV (using pandas) and return order_id, created_at and saved filename. Call this only after customer confirmation.",
+                "description": "Save a confirmed order to CSV (using pandas) and return order_id, created_at and saved filename. **Do not call when cart is empty.** The order must have at least one item with quantity >= 1.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "order": {
                             "type": "array",
-                            "description": "Confirmed list of items to persist to disk. Must have at least 1 item, each with item_id and quantity > 0.",
+                            "minItems": 1,
+                            "description": "Confirmed list of items to persist to disk. Must have at least 1 item, each with item_id and quantity >= 1.",
                             "items": {
                                 "type": "object",
                                 "properties": {
                                     "item_id": {"type": "integer"},
-                                    "quantity": {"type": "integer"}
+                                    "quantity": {"type": "integer", "minimum": 1}
                                 },
                                 "required": ["item_id", "quantity"]
                             }
@@ -244,167 +358,138 @@ if __name__ == "__main__":
         }
     ]
 
-    # 2) system_prompt: instruct assistant to preview with calculate_total and finalize with create_order
-    greeting_prompt = "Thank you for choosing us, what would you like to eat today?"
+    # 2) greeting_prompt and 3) system_prompt with cart instructions
+    greeting_prompt = "Welcome! I'm here to take your order — what would you like to add to your cart today?"
 
     system_prompt = f"""
-    You are a friendly and efficient fast-food restaurant receptionist that takes quick order conversations.
-    Your job is to take customer orders, offer suggestions to what they want based on the menu, after you are sure with the items in the menu that customers want, create an order and direct them to the next step.
+    You are a friendly and efficient fast-food restaurant receptionist that manages a customer cart and creates orders.
+    Rules and behavior (follow exactly):
+    - Use `get_menu` to show menu items when the user asks or when suggesting items.
+    - Use `add_or_update_cart_items` when the user asks to add items or increase quantities (e.g. "add 2 cheeseburgers").
+    - Use `remove_cart_items` when the user asks to remove items (e.g. "remove the Coke").
+    - Use `set_cart_item_quantities` when the user explicitly wants to set exact quantities (e.g. "make cheeseburgers 3").
+    - Use `calculate_total` to preview totals. Always preview before asking for confirmation.
+    - NEVER call `create_order` unless the user explicitly confirms the final order (explicit confirmation examples: "yes", "confirm", "place order", "checkout now").
+    - NEVER call `create_order` with an empty order. The order must contain at least one item (quantity >= 1).
+    - When you call a tool, supply the appropriate arguments (do not leave required arguments empty).
+    - After create_order returns, present the order_id and a polite thank-you and direct the customer to payment.
 
-    Here are your detailed instructions:
-    - Greet the customer and ask their order for creation.
-    - Suggest items: recommend popular or complementary menu items as well as the existing discounts from the `MENU` if asked.
-    - Show details: Use the 'get_menu' tool (parameter 'category_ids' is optional) to look up menu items.
-    - Preview order totals: Use the 'calculate_total' tool to compute order_details, subtotal, discounts_applied (don't bother the discounts_applied if it is zero), and total_price, and then show to the customer. **calculate_total is read-only and must NOT save files.**
-    - ALWAYS ask for confirmation from the customer about the order you want to create: After showing the preview, ask the customer whether they want to confirm the order, if they want to add more, add those new items to the previous ones they requested and call the 'calculate_total' tool again until the users are sure about what they want from your `MENU`.
-    - Finalize the order: Only after the customer explicitly confirms (e.g. "yes", "confirm", "place order") call 'create_order' to save the order and return an order_id and created_at. Then thank the customer and direct them to the payment window.
-    - Please confirm the exact items in the order. Make sure there is at least one item when create the order.
-    Always use only the `MENU` items (IDs from the `MENU`) when making totals.
-
+    When interacting with the user, be concise. Ask clarifying questions only when necessary (e.g., size/toppings) and show the cart preview when asked or before finalizing.
+    Always use only MENU item IDs when constructing orders.
     """
 
-    # 3) messages: 1-shot example that shows the preview -> confirmation -> create flow
+    # 4) messages: 1-shot example showing add -> preview -> change -> preview -> confirm -> create flow
     messages = [
         {"role": "system", "content": system_prompt},
 
-        # 1-shot example starts
-        {"role": "assistant", "content": greeting_prompt},
-        {"role": "user", "content": "I want 2 Burgers please"},
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "get_menu", "arguments":{"category_ids": "[1]"}}}
-        ]},
-        {"role": "assistant", "content": "We have Veggie Burger $5.49 and Cheeseburger $5.99. We are having 10% discount on Cheeseburger. What would you like?"},
-        {"role": "user", "content": "2 cheeseburgers please"},
-        {"role": "assistant", "content": "Ok, would you like some drinks? We are having 10% off on Coca-Cola and 20% off on Orange Juice."},
-        {"role": "user", "content": "yes, 1 Coke"},
-        {"role": "assistant", "content": "Got it, would you like some sides? We are having some delicious French Fries."},
-        {"role": "user", "content": "no"},
+        # assistant greets
+        {"role": "assistant", "content": greeting_prompt}
 
-        # Assistant calls calculate_total for a preview (read-only)
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])}}}
-        ]},
+        # # user asks to add items
+        # {"role": "user", "content": "I'd like 2 Cheeseburgers and 1 Orange Juice, please."},
 
-        # Tool returns preview (no order_id yet)
-        {"role": "tool", "name": "calculate_total", "content": json.dumps({
-            "order_details": [
-                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
-                {
-                    "item_id": 4,
-                    "name": "Coca-Cola",
-                    "quantity": 1,
-                    "price_per_item": 1.49,
-                    "line_total": 1.49,
-                    "line_discount": 0.15,
-                    "discount_pct": 0.1
-                }
-            ],
-            "subtotal": 13.47,
-            "discounts_applied": [
-                {"description": "10% off on Cheeseburger", "amount": -1.2},
-                {
-                    "description": "10% off on Coca-Cola",
-                    "amount": -0.15
-                }],
-            "total_price": 12.12
-        })},
+        # # assistant calls add_or_update_cart_items
+        # {"role": "assistant", "content": "", "tool_calls": [
+        #     {"function": {"name": "add_or_update_cart_items", "arguments": {"items": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
+        # ]},
 
-        # Assistant shows preview and asks for confirmation
-        {"role": "assistant", "content": "Here is your order preview: 2 x Cheeseburger, 1 x Coca-Cola. Subtotal $13.47, discounts applied $1.35, total $12.12. Would you like to confirm and place this order?"},
+        # # tool returns current cart (example)
+        # {"role": "tool", "name": "add_or_update_cart_items", "content": json.dumps([
+        #     {"item_id": 1, "quantity": 2},
+        #     {"item_id": 5, "quantity": 1}
+        # ])},
 
-        {"role": "user", "content": "I changed my mind, I don't like Coke any more, take the Orange Juice instead"},
+        # # assistant previews totals by calling calculate_total
+        # {"role": "assistant", "content": "", "tool_calls": [
+        #     {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
+        # ]},
 
-        #---------------
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
-        ]},
+        # # tool returns preview (no order_id)
+        # {"role": "tool", "name": "calculate_total", "content": json.dumps({
+        #     "order_details": [
+        #         {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
+        #         {"item_id": 5, "name": "Orange Juice", "quantity": 1, "price_per_item": 1.99, "line_total": 1.99, "line_discount": 0.4, "discount_pct": 0.2}
+        #     ],
+        #     "subtotal": 13.97,
+        #     "discounts_applied": [
+        #         {"description": "10% off on Cheeseburger", "amount": -1.2},
+        #         {"description": "20% off on Orange Juice", "amount": -0.4}
+        #     ],
+        #     "total_price": 12.37
+        # })},
 
-        # Tool returns preview (no order_id yet)
-        {"role": "tool", "name": "calculate_total", "content": json.dumps({
-            "order_details": [
-                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
-                {
-                    "item_id": 5,
-                    "name": "Orange Juice",
-                    "quantity": 1,
-                    "price_per_item": 1.99,
-                    "line_total": 1.99,
-                    "line_discount": 0.4,
-                    "discount_pct": 0.2
-                }
-            ],
-            "subtotal": 13.97,
-            "discounts_applied": [
-                {"description": "10% off on Cheeseburger", "amount": -1.2},
-                {
-                    "description": "20% off on Orange Juice",
-                    "amount": -0.4
-                }],
-            "total_price": 12.37
-        })},
-        {"role": "assistant", "content": "Great, here is your order preview: 2 x Cheeseburger, 1 x Orange Juice. Subtotal $13.97, discounts applied $1.6, total $12.37. Would you like to confirm and place this order?"},
-        # ---------------------
+        # # assistant asks for confirmation
+        # {"role": "assistant", "content": "Here is your preview: 2 x Cheeseburger, 1 x Orange Juice. Total $12.37 (discounts applied $1.60). Would you like to confirm and place this order? (yes/no)"},
 
-        # User confirms
-        {"role": "user", "content": "Yes, please confirm"},
+        # # user changes mind and wants to remove Orange Juice, add Coca-Cola instead
+        # {"role": "user", "content": "Please take out the Orange Juice and add 1 Coca-Cola instead."},
 
-        # Assistant calls create_order to finalize (tool that saves)
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "create_order", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
-        ]},
+        # # assistant calls remove and add (tool calls)
+        # {"role": "assistant", "content": "", "tool_calls": [
+        #     {"function": {"name": "remove_cart_items", "arguments": {"item_ids": json.dumps([5])}}},
+        #     {"function": {"name": "add_or_update_cart_items", "arguments": {"items": json.dumps([{"item_id": 4, "quantity": 1}])}}}
+        # ]},
 
-        # Tool returns saved order metadata
-        {"role": "tool", "name": "create_order", "content": json.dumps({
-            "order_details": [
-                {
-                    "item_id": 1,
-                    "name": "Cheeseburger",
-                    "quantity": 2,
-                    "price_per_item": 5.99,
-                    "line_total": 11.98,
-                    "line_discount": 1.2,
-                    "discount_pct": 0.1
-                },
-                {
-                    "item_id": 5,
-                    "name": "Orange Juice",
-                    "quantity": 1,
-                    "price_per_item": 1.99,
-                    "line_total": 1.99,
-                    "line_discount": 0.4,
-                    "discount_pct": 0.2
-                }
-            ],
-            "subtotal": 13.97,
-            "discounts_applied": [
-                {
-                    "description": "10% off on Cheeseburger",
-                    "amount": -1.2
-                },
-                {
-                    "description": "20% off on Orange Juice",
-                    "amount": -0.4
-                }
-            ],
-            "total_price": 12.37,
-            "order_id": "87137e055d20459aace8a216ad76cd70",
-            "created_at": "2025-08-11T16:16:28.192600",
-            "saved_as": "orders\\order_87137e055d20459aace8a216ad76cd70.csv"
-        })},
+        # # tool returns current cart (example)
+        # {"role": "tool", "name": "remove_cart_items", "content": json.dumps([{"item_id": 1, "quantity": 2}])},
+        # {"role": "tool", "name": "add_or_update_cart_items", "content": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])},
 
-        # Assistant finalizes message
-        {"role": "assistant", "content": "Great — your order was created with ID 87137e055d20459aace8a216ad76cd70: 2 Cheeseburgers and 1 Orange Juice. With $1.6 discount, you pay $10.78. Thank you and please proceed to the payment window."}
-        # 1-shot example ends
+        # # assistant previews totals again
+        # {"role": "assistant", "content": "", "tool_calls": [
+        #     {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])}}}
+        # ]},
+
+        # # tool returns preview
+        # {"role": "tool", "name": "calculate_total", "content": json.dumps({
+        #     "order_details": [
+        #         {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
+        #         {"item_id": 4, "name": "Coca-Cola", "quantity": 1, "price_per_item": 1.49, "line_total": 1.49, "line_discount": 0.15, "discount_pct": 0.1}
+        #     ],
+        #     "subtotal": 13.47,
+        #     "discounts_applied": [
+        #         {"description": "10% off on Cheeseburger", "amount": -1.2},
+        #         {"description": "10% off on Coca-Cola", "amount": -0.15}
+        #     ],
+        #     "total_price": 12.12
+        # })},
+
+        # # assistant asks confirmation again and user confirms
+        # {"role": "assistant", "content": "Preview: 2 x Cheeseburger, 1 x Coca-Cola. Total $12.12. Confirm and place order?"},
+        # {"role": "user", "content": "Yes, place order please."},
+
+        # # assistant calls create_order (finalize)
+        # {"role": "assistant", "content": "", "tool_calls": [
+        #     {"function": {"name": "create_order", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])}}}
+        # ]},
+
+        # # tool returns saved order metadata (example)
+        # {"role": "tool", "name": "create_order", "content": json.dumps({
+        #     "order_details": [
+        #         {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99},
+        #         {"item_id": 4, "name": "Coca-Cola", "quantity": 1, "price_per_item": 1.49}
+        #     ],
+        #     "subtotal": 13.47,
+        #     "discounts_applied": [{"description": "10% off on Cheeseburger", "amount": -1.2}, {"description": "10% off on Coca-Cola", "amount": -0.15}],
+        #     "total_price": 12.12,
+        #     "order_id": "example_order_id",
+        #     "created_at": "2025-08-11T00:00:00",
+        #     "saved_as": "orders/order_example_order_id.csv"
+        # })},
+
+        # # assistant final message
+        # {"role": "assistant", "content": "Great — your order was created with ID example_order_id. Thank you! Please proceed to the payment window."}
     ]
     # -----------------------------------------------------------------
 
     # Map function names to the actual functions for dispatch
     available_tools = {
         "get_menu": get_menu,
+        "add_or_update_cart_items": add_or_update_cart_items,
+        "remove_cart_items": remove_cart_items,
+        "set_cart_item_quantities": set_cart_item_quantities,
         "calculate_total": calculate_total,
         "create_order": create_order
     }
-
 
     print("-----------FastFood Restaurant-------------")
     print(f"assistant> {greeting_prompt}")

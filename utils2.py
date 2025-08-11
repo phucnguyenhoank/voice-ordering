@@ -18,7 +18,7 @@ def llama(messages,
     
     # Construct the payload
     payload = {
-        "model": "llama3.2",
+        "model": "llama3.2:1b",
         "messages": [],
         "stream": False,
         "options": {
