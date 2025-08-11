@@ -6,6 +6,7 @@ import datetime
 import uuid
 import csv
 import os
+import pandas as pd
 
 data = {
     "categories": [
@@ -28,78 +29,117 @@ data = {
 }
 MENU_DATA = copy.deepcopy(data)
 
-def calculate_total(order, create=False, saved_folder="orders"):
-    total = 0.0
+def _load_order(order):
+    """Accept list or JSON string and return list of dicts."""
+    if isinstance(order, str):
+        return json.loads(order)
+    return order
+
+def _get_item(item_id):
+    return next(i for i in MENU_DATA["items"] if i["id"] == item_id)
+
+def _get_item_discount(item_id):
+    return next((d["discount_percentage"] for d in MENU_DATA["discounts"] if item_id in d["item_ids"]), 0.0)
+
+def calculate_total(order):
+    """
+    Read-only preview.
+    order: list of {"item_id": int, "quantity": int} OR JSON string of same
+    returns: dict with order_details, subtotal, discounts_applied, total_price
+    """
+    order = _load_order(order)
     subtotal = 0.0
+    total = 0.0
     order_details = []
     discounts_applied = []
+
     for ord_item in order:
         item_id = ord_item["item_id"]
-        quantity = ord_item["quantity"]
-        item = next(i for i in data["items"] if i["id"] == item_id)
-        name = item["name"]
-        price = item["price"]
-        discount = 0.0
-        for disc in data["discounts"]:
-            if item_id in disc["item_ids"]:
-                discount = disc["discount_percentage"]
-                break
-        line_total = round(price * quantity, 2)
+        qty = int(ord_item["quantity"])
+        item = _get_item(item_id)
+        price = float(item["price"])
+        discount = float(_get_item_discount(item_id))  # decimal, e.g. 0.1
+
+        line_total = round(price * qty, 2)
+        line_discount_amount = round(price * qty * discount, 2)
+
         subtotal += line_total
-        per_item_discount = round(price * discount, 2)
-        discount_amount = per_item_discount * quantity
-        if discount_amount > 0:
-            description = f"{int(discount * 100)}% off on {name}"
-            discounts_applied.append({"description": description, "amount": round(-discount_amount, 2)})
-        discounted_line_total = line_total - discount_amount
-        total += discounted_line_total
+        total += (line_total - line_discount_amount)
+
         order_details.append({
-            "name": name,
-            "quantity": quantity,
+            "item_id": item_id,
+            "name": item["name"],
+            "quantity": qty,
             "price_per_item": price,
-            "line_total": line_total
+            "line_total": round(line_total, 2),
+            "line_discount": round(line_discount_amount, 2),
+            "discount_pct": discount
         })
+
+        if line_discount_amount > 0:
+            discounts_applied.append({
+                "description": f"{int(discount*100)}% off on {item['name']}",
+                "amount": -round(line_discount_amount, 2)
+            })
 
     subtotal = round(subtotal, 2)
     total = round(total, 2)
 
-    result = {
+    return {
         "order_details": order_details,
         "subtotal": subtotal,
         "discounts_applied": discounts_applied,
         "total_price": total
     }
 
-    order_id = None
-    created_at = None
-    if create:
-        now = datetime.datetime.now()
-        dt_string = now.strftime("%Y%m%d_%H%M%S")
-        order_id = f"{uuid.uuid4().hex}"
-        created_at = now.isoformat()
-        os.makedirs(saved_folder, exist_ok=True)
-        filename = os.path.join(saved_folder, f"order_{order_id}_{dt_string}.csv")
-        with open(filename, "w", newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(["Order ID", "Created At", "Item Name", "Quantity", "Price", "Discount", "Subtotal"])
-            for det in order_details:
-                # Recompute per line discount for CSV
-                item_discount = next((d["discount_percentage"] for d in data["discounts"] if ord_item["item_id"] in d["item_ids"]), 0.0)
-                det_subtotal = round(price * (1 - item_discount) * quantity, 2)
-                writer.writerow([order_id, created_at, det["name"], det["quantity"], price, item_discount, det_subtotal])
-        result["order_id"] = order_id
-        result["created_at"] = created_at
+def create_order(order, saved_folder="orders"):
+    """
+    Finalize & save order using pandas. Returns order metadata + same totals.
+    """
+    order = _load_order(order)
+    totals = calculate_total(order)
 
-    return result
+    now = datetime.datetime.now()
+    order_id = uuid.uuid4().hex
+    created_at = now.isoformat()
 
-def get_menu(categories=None):
-    # If categories is None or not provided, return the full data
-    if not categories:
-        print('empty category:', categories)
+    # Build rows for DataFrame
+    rows = []
+    for det in totals["order_details"]:
+        rows.append({
+            "order_id": order_id,
+            "created_at": created_at,
+            "item_id": det["item_id"],
+            "item_name": det["name"],
+            "quantity": det["quantity"],
+            "price_per_item": det["price_per_item"],
+            "discount_pct": det["discount_pct"],
+            "line_total": det["line_total"],
+            "line_discount": det["line_discount"],
+            "line_after_discount": round(det["line_total"] - det["line_discount"], 2)
+        })
+
+    df = pd.DataFrame(rows)
+    os.makedirs(saved_folder, exist_ok=True)
+    filename = os.path.join(saved_folder, f"order_{order_id}.csv")
+    df.to_csv(filename, index=False, encoding="utf-8")
+
+    # Attach order id and created_at to the returned result
+    totals["order_id"] = order_id
+    totals["created_at"] = created_at
+    totals["saved_as"] = filename
+    return totals
+
+def get_menu(category_ids=None):
+    # If category_ids is None or empty, return the full data
+    if not category_ids:
         return data
+
+    if isinstance(category_ids, str):
+        category_ids = json.loads(category_ids)
     
-    # Filter categories by provided names
-    filtered_categories = [cat for cat in data["categories"] if cat["name"] in categories]
+    # Filter categories by provided IDs
+    filtered_categories = [cat for cat in data["categories"] if cat["id"] in category_ids]
     filtered_category_ids = {cat["id"] for cat in filtered_categories}
     
     # Filter items by category_id in filtered categories
@@ -131,20 +171,22 @@ def print_content(message):
     print(f"{role}> {content}")
 
 if __name__ == "__main__":
-    # Updated tools with adjusted parameters
+    # ----------------- Replace these three variables -----------------
+
+    # 1) default_tools: explicit, non-ambiguous tool schema
     default_tools = [
         {
             "type": "function",
             "function": {
                 "name": "get_menu",
-                "description": "Get the current fast food menu, optionally filtered by categories.",
+                "description": "Get the current fast food menu, optionally filtered by category IDs.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "categories": {
+                        "category_ids": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional list of menu category names: 'Burgers', 'Sides', or 'Drinks'"
+                            "items": {"type": "integer"},
+                            "description": "Optional list of menu category IDs: 1 (Burgers), 2 (Sides), 3 (Drinks)"
                         }
                     }
                 }
@@ -154,13 +196,13 @@ if __name__ == "__main__":
             "type": "function",
             "function": {
                 "name": "calculate_total",
-                "description": "Calculates the total price for a list of items and applies discounts. The item used to calculate must exist in the current menu. The parameter 'create' must be true to save the order when the confirmed otherwise it will not. Use this to show the customer the order details before they confirm.",
+                "description": "Read-only preview: returns order_details, subtotal, discounts_applied and total_price. Does NOT save files.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "order": {
                             "type": "array",
-                            "description": "List of items to order.",
+                            "description": "List of items to order (preview only).",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -169,10 +211,31 @@ if __name__ == "__main__":
                                 },
                                 "required": ["item_id", "quantity"]
                             }
-                        },
-                        "create": {
-                            "type": "boolean",
-                            "description": "If true, save the order to a CSV file, if false, don't save the order."
+                        }
+                    },
+                    "required": ["order"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_order",
+                "description": "Save a confirmed order to CSV (using pandas) and return order_id, created_at and saved filename. Call this only after customer confirmation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "order": {
+                            "type": "array",
+                            "description": "Confirmed list of items to persist to disk.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "item_id": {"type": "integer"},
+                                    "quantity": {"type": "integer"}
+                                },
+                                "required": ["item_id", "quantity"]
+                            }
                         }
                     },
                     "required": ["order"]
@@ -181,57 +244,91 @@ if __name__ == "__main__":
         }
     ]
 
+    # 2) system_prompt: instruct assistant to preview with calculate_total and finalize with create_order
     greeting_prompt = "Thank you for choosing us, what would you like to eat today?"
+
     system_prompt = f"""
-    You are a friendly and efficient fast-food restaurant receptionist that takes quick order conversations. 
+    You are a friendly and efficient fast-food restaurant receptionist that takes quick order conversations.
     Your job is to take customer orders, offer suggestions, and direct them to the next step.
 
     Here are your instructions:
-    - Take the order: Greet the customer first and then ask their order.
-    - Suggest items: Recommend popular or complementary menu items from the `MENU` if you are asked.
-    - Show details: Use the 'get_menu' with the optional parameter 'categories' (a list of category names) to get item information the user needs.
-    - Calculate total price: You can only use the items from the `MENU` to show the full order details and total price to the user. Use item IDs from the MENU for the order.
-    - Ask for confirmation: After showing the order, politely confirm the order with the customer.
-    - Finalize the order: Once confirmed, use the 'calculate_total' function with 'create=true' to finalize the order, say thanks, and direct the customer to the payment window.
+    - Greet the customer and ask their order.
+    - Suggest items: recommend popular or complementary menu items from the MENU if asked.
+    - Show details: Use the 'get_menu' tool (parameter 'category_ids' is optional) to look up menu items.
+    - Preview order totals: Use the 'calculate_total' tool to compute and show order_details, subtotal, discounts_applied, and total_price. **calculate_total is read-only and must NOT save files.**
+    - Ask for confirmation: After showing the preview, ask the customer whether they want to confirm the order.
+    - Finalize the order: Only after the customer explicitly confirms (e.g. "yes", "confirm", "place order") call 'create_order' to save the order and return an order_id and created_at. Then thank the customer and direct them to the payment window.
+
+    Always use only the MENU items (IDs from the MENU) when making totals.
 
     Here is the `MENU`:
     {MENU_DATA}
     """
 
-    
+    # 3) messages: 1-shot example that shows the preview -> confirmation -> create flow
     messages = [
         {"role": "system", "content": system_prompt},
 
         # 1-shot example starts
         {"role": "assistant", "content": greeting_prompt},
         {"role": "user", "content": "I want 2 Burgers please"},
-        {"role": "assistant", "content": "We have Veggie Burger $5.49 and Cheeseburger $5.99, we are having 10% discount on Cheeseburger. What would you like?"},
-        {"role": "user", "content": "2 cheese burgers please"},
+        {"role": "assistant", "content": "We have Veggie Burger $5.49 and Cheeseburger $5.99. We are having 10% discount on Cheeseburger. What would you like?"},
+        {"role": "user", "content": "2 cheeseburgers please"},
         {"role": "assistant", "content": "Ok, would you like some drinks? We are having 10% off on Coca-Cola and 20% off on Orange Juice."},
         {"role": "user", "content": "no"},
+
+        # Assistant calls calculate_total for a preview (read-only)
         {"role": "assistant", "content": "", "tool_calls": [
-            {"function": {"name": "calculate_total", "arguments": {"order": [{"item_id": 1, "quantity": 2}], "create": True}}}
+            {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}])}}}
         ]},
+
+        # Tool returns preview (no order_id yet)
         {"role": "tool", "name": "calculate_total", "content": json.dumps({
             "order_details": [
-                {"name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98}
+                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2}
+            ],
+            "subtotal": 11.98,
+            "discounts_applied": [{"description": "10% off on Cheeseburger", "amount": -1.2}],
+            "total_price": 10.78
+        })},
+
+        # Assistant shows preview and asks for confirmation
+        {"role": "assistant", "content": "Here is your order preview: 2 x Cheeseburger. Subtotal $11.98, discounts applied $1.20, total $10.78. Would you like to confirm and place this order? (yes/no)"},
+
+        # User confirms
+        {"role": "user", "content": "Yes, please confirm"},
+
+        # Assistant calls create_order to finalize (tool that saves)
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "create_order", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}])}}}
+        ]},
+
+        # Tool returns saved order metadata
+        {"role": "tool", "name": "create_order", "content": json.dumps({
+            "order_details": [
+                {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2}
             ],
             "subtotal": 11.98,
             "discounts_applied": [{"description": "10% off on Cheeseburger", "amount": -1.2}],
             "total_price": 10.78,
             "order_id": "example_order_id",
-            "created_at": "2025-08-11T00:00:00"
+            "created_at": "2025-08-11T00:00:00",
+            "saved_as": "orders/order_example_order_id.csv"
         })},
-        {"role": "assistant", "content": "Great, your order was created with ID example_order_id: 2 Cheeseburgers, each $5.99. With 10% off, you only pay $10.78. Thank you and please go to the payment window ahead."}
+
+        # Assistant finalizes message
+        {"role": "assistant", "content": "Great — your order was created with ID example_order_id: 2 Cheeseburgers. With 10% off, you pay $10.78. Thank you and please proceed to the payment window."}
         # 1-shot example ends
     ]
+    # -----------------------------------------------------------------
 
-    
     # Map function names to the actual functions for dispatch
     available_tools = {
         "get_menu": get_menu,
-        "calculate_total": calculate_total
+        "calculate_total": calculate_total,
+        "create_order": create_order
     }
+
 
     print("-----------FastFood Restaurant-------------")
     print(f"assistant> {greeting_prompt}")
@@ -242,12 +339,11 @@ if __name__ == "__main__":
         messages.append({"role": "user", "content": user_prompt})
 
         response = llama(messages=messages, tools=default_tools)
+        print(json.dumps(response, indent=4))
+
+
         message = response["message"]
-
-        print(f"response:{json.dumps(response, indent=4)}")
-
         if message.get("tool_calls"):
-            
             tool_calls = message["tool_calls"]
             messages.append(message)  # Append assistant's message with tool calls
 
