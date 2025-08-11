@@ -1,10 +1,11 @@
-from fcall import get_menu
-def calculate_total(items: list[dict]):
-    print(items)
-    for item_order in items:
-        print(item_order)
+from fcall import *
+import json
 
-arguments = {
-                        "items": "[{\"name\": \"Coke\", \"quantity\": 2}]"
-                    }
-calculate_total(**arguments)
+# Get full menu (no filtering)
+full_menu = get_menu()
+print(json.dumps(full_menu, indent=4))
+
+print('-----------')
+# Get menu for only "Burgers" and "Drinks"
+filtered_menu = get_menu(categories=["Burgers", "drinks"])
+print(json.dumps(filtered_menu, indent=4))
