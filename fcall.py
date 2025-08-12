@@ -2,6 +2,7 @@ import uuid
 from utils2 import llama # Assuming 'utils2.llama' is your LLM call function
 import copy
 import json
+import ast
 import datetime
 import uuid
 import csv
@@ -30,44 +31,159 @@ data = {
 MENU_DATA = copy.deepcopy(data)
 
 # The customer cart is stored globally for simplicity
-cart = []
+# -------------------------
+# Helper: Safe parsing
+# -------------------------
+def safe_parse_items(raw_items):
+    """
+    Convert raw input from LLM to a valid list of {'item_id': int, 'quantity': int}.
+    Repairs common mistakes like stringified lists or missing quantity.
+    """
+    # Step 1: Already a list?
+    if isinstance(raw_items, list):
+        return _filter_items(raw_items)
 
-def add_or_update_cart_items(items):
+    # Step 2: String → try JSON
+    if isinstance(raw_items, str):
+        try:
+            parsed = json.loads(raw_items)
+            return _filter_items(parsed)
+        except json.JSONDecodeError:
+            pass
+
+        # Step 3: String → try Python literal syntax
+        try:
+            parsed = ast.literal_eval(raw_items)
+            return _filter_items(parsed)
+        except Exception:
+            pass
+
+    # Step 4: Nothing worked → empty list
+    return []
+
+
+def _filter_items(items):
+    """Ensure list contains only valid {'item_id': int, 'quantity': int} entries."""
+    valid = []
+    if isinstance(items, list):
+        for item in items:
+            # Full dict case
+            if (isinstance(item, dict) and
+                isinstance(item.get("item_id"), int) and
+                isinstance(item.get("quantity"), int) and
+                item["quantity"] >= 1):
+                valid.append(item)
+
+            # Repair case: int item_id only → assume quantity=1
+            elif isinstance(item, int):
+                valid.append({"item_id": item, "quantity": 1})
+
+    return valid
+
+
+# -------------------------
+# Cart storage (example)
+# -------------------------
+customer_cart = []  # [{item_id, quantity}, ...]
+
+
+# -------------------------
+# Cart functions
+# -------------------------
+def add_or_increase_cart_items(items):
     """
-    Add new items to the cart or update quantities if they already exist.
-    items: list of dicts, e.g. [{"item_id": 1, "quantity": 2}, ...]
+    Add items to the cart or increase their quantity if they already exist.
+    raw_items can be:
+      - list of dicts: [{"item_id": 1, "quantity": 2}]
+      - list of ints: [1, 2] (auto quantity=1)
+      - JSON/Python string: "[{'item_id': 1, 'quantity': 2}]"
     """
-    global cart
+    items = safe_parse_items(items)
+    if not items:
+        return {"error": "No valid items provided."}
+
+    global customer_cart
     for new_item in items:
-        for cart_item in cart:
+        found = False
+        for cart_item in customer_cart:
             if cart_item["item_id"] == new_item["item_id"]:
                 cart_item["quantity"] += new_item["quantity"]
+                found = True
                 break
-        else:
-            cart.append({"item_id": new_item["item_id"], "quantity": new_item["quantity"]})
+        if not found:
+            customer_cart.append(new_item)
+    
+    return {"message": "Items added/updated successfully.", "cart": customer_cart}
 
 
 def remove_cart_items(item_ids):
     """
-    Remove items from the cart by item_id.
-    item_ids: list of integers, e.g. [1, 5]
+    Remove items from the cart by their IDs.
+    raw_item_ids can be:
+      - list of ints: [1, 2]
+      - list of dicts: [{"item_id": 1}, {"item_id": 2}]
+      - JSON/Python string
     """
-    global cart
-    cart = [item for item in cart if item["item_id"] not in item_ids]
+    ids = _extract_ids(item_ids)
+    if not ids:
+        return {"error": "No valid item IDs provided."}
+
+    global customer_cart
+    customer_cart = [item for item in customer_cart if item["item_id"] not in ids]
+
+    return {"message": "Items removed successfully.", "cart": customer_cart}
 
 
 def set_cart_item_quantities(items):
     """
-    Set new quantities for existing items in the cart.
-    items: list of dicts, e.g. [{"item_id": 1, "quantity": 5}, ...]
+    Set exact quantities for items in the cart (replace, not add).
+    If quantity is 0 or less → item is removed.
     """
-    global cart
-    for change_item in items:
-        for cart_item in cart:
-            if cart_item["item_id"] == change_item["item_id"]:
-                cart_item["quantity"] = change_item["quantity"]
-                break
+    items = safe_parse_items(items)
+    if not items:
+        return {"error": "No valid items provided."}
 
+    global customer_cart
+    cart_dict = {item["item_id"]: item["quantity"] for item in customer_cart}
+
+    for new_item in items:
+        if new_item["quantity"] <= 0:
+            cart_dict.pop(new_item["item_id"], None)
+        else:
+            cart_dict[new_item["item_id"]] = new_item["quantity"]
+
+    customer_cart = [{"item_id": k, "quantity": v} for k, v in cart_dict.items()]
+
+    return {"message": "Item quantities updated.", "cart": customer_cart}
+
+
+# -------------------------
+# Helper: ID extraction
+# -------------------------
+def _extract_ids(raw_ids):
+    """Extract integer IDs from various formats."""
+    if isinstance(raw_ids, list):
+        ids = []
+        for entry in raw_ids:
+            if isinstance(entry, int):
+                ids.append(entry)
+            elif isinstance(entry, dict) and isinstance(entry.get("item_id"), int):
+                ids.append(entry["item_id"])
+        return ids
+
+    if isinstance(raw_ids, str):
+        try:
+            parsed = json.loads(raw_ids)
+            return _extract_ids(parsed)
+        except json.JSONDecodeError:
+            pass
+        try:
+            parsed = ast.literal_eval(raw_ids)
+            return _extract_ids(parsed)
+        except Exception:
+            pass
+
+    return []
     
 
 def _load_order(order):
@@ -82,19 +198,21 @@ def _get_item(item_id):
 def _get_item_discount(item_id):
     return next((d["discount_percentage"] for d in MENU_DATA["discounts"] if item_id in d["item_ids"]), 0.0)
 
-def calculate_total(order):
+def calculate_total():
     """
-    Read-only preview.
-    order: list of {"item_id": int, "quantity": int} OR JSON string of same
-    returns: dict with order_details, subtotal, discounts_applied, total_price
+    Read-only preview using the global `cart`.
+    Returns: dict with order_details, subtotal, discounts_applied, total_price
     """
-    order = _load_order(order)
+    global cart
+    # ensure cart is a list of dicts (keeps compatibility if cart was serialized)
+    cart = _load_order(cart)
+
     subtotal = 0.0
     total = 0.0
     order_details = []
     discounts_applied = []
 
-    for ord_item in order:
+    for ord_item in cart:
         item_id = ord_item["item_id"]
         qty = int(ord_item["quantity"])
         item = _get_item(item_id)
@@ -130,15 +248,23 @@ def calculate_total(order):
         "order_details": order_details,
         "subtotal": subtotal,
         "discounts_applied": discounts_applied,
-        "total_price": total
+        "total_price": total,
+        "cart": cart  # return current cart for convenience
     }
 
-def create_order(order, saved_folder="orders"):
+def create_order(saved_folder="orders"):
     """
-    Finalize & save order using pandas. Returns order metadata + same totals.
+    Finalize & save order using pandas. Uses global cart.
+    Returns order metadata + same totals. Clears cart after saving.
     """
-    order = _load_order(order)
-    totals = calculate_total(order)
+    global cart
+    cart = _load_order(cart)
+
+    # guard: don't create empty orders
+    if not cart:
+        return {"error": "Cart is empty. Cannot create order."}
+
+    totals = calculate_total()
 
     now = datetime.datetime.now()
     order_id = uuid.uuid4().hex
@@ -169,6 +295,10 @@ def create_order(order, saved_folder="orders"):
     totals["order_id"] = order_id
     totals["created_at"] = created_at
     totals["saved_as"] = filename
+
+    # Clear the cart after successful save
+    cart = []
+
     return totals
 
 def get_menu(category_ids=None):
@@ -212,9 +342,7 @@ def print_content(message):
     print(f"{role}> {content}")
 
 if __name__ == "__main__":
-    # ----------------- Replace these five variables -----------------
 
-    # 1) default_tools: explicit, non-ambiguous tool schema including cart ops
     default_tools = [
         {
             "type": "function",
@@ -236,7 +364,7 @@ if __name__ == "__main__":
         {
             "type": "function",
             "function": {
-                "name": "add_or_update_cart_items",
+                "name": "add_or_increase_cart_items",
                 "description": "Add items to the current cart or increase quantity if item exists. Returns the updated cart. Items must include item_id and quantity (>0).",
                 "parameters": {
                     "type": "object",
@@ -244,7 +372,7 @@ if __name__ == "__main__":
                         "items": {
                             "type": "array",
                             "minItems": 1,
-                            "description": "List of items to add or update in cart.",
+                            "description": "List of items to add or increase in cart.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -308,25 +436,10 @@ if __name__ == "__main__":
             "type": "function",
             "function": {
                 "name": "calculate_total",
-                "description": "Read-only preview: compute order_details, subtotal, discounts_applied and total_price for the provided order (list of item_id/quantity). Does NOT save files.",
+                "description": "Read-only preview: compute order_details, subtotal, discounts_applied and total_price using the current global cart. Does NOT save files.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "order": {
-                            "type": "array",
-                            "minItems": 1,
-                            "description": "List of items to compute totals for (preview only).",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "item_id": {"type": "integer"},
-                                    "quantity": {"type": "integer", "minimum": 1}
-                                },
-                                "required": ["item_id", "quantity"]
-                            }
-                        }
-                    },
-                    "required": ["order"]
+                    "properties": {}
                 }
             }
         },
@@ -334,162 +447,58 @@ if __name__ == "__main__":
             "type": "function",
             "function": {
                 "name": "create_order",
-                "description": "Save a confirmed order to CSV (using pandas) and return order_id, created_at and saved filename. **Do not call when cart is empty.** The order must have at least one item with quantity >= 1.",
+                "description": "Save a confirmed order (the current global cart) and return order_id, created_at and saved filename.",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "order": {
-                            "type": "array",
-                            "minItems": 1,
-                            "description": "Confirmed list of items to persist to disk. Must have at least 1 item, each with item_id and quantity >= 1.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "item_id": {"type": "integer"},
-                                    "quantity": {"type": "integer", "minimum": 1}
-                                },
-                                "required": ["item_id", "quantity"]
-                            }
-                        }
-                    },
-                    "required": ["order"]
+                    "properties": {}
                 }
             }
         }
     ]
 
-    # 2) greeting_prompt and 3) system_prompt with cart instructions
-    greeting_prompt = "Welcome! I'm here to take your order — what would you like to add to your cart today?"
-
-    system_prompt = f"""
-    You are a friendly and efficient fast-food restaurant receptionist that manages a customer cart and creates orders.
-    Rules and behavior (follow exactly):
-    - Use `get_menu` to show menu items when the user asks or when suggesting items.
-    - Use `add_or_update_cart_items` when the user asks to add items or increase quantities (e.g. "add 2 cheeseburgers").
-    - Use `remove_cart_items` when the user asks to remove items (e.g. "remove the Coke").
-    - Use `set_cart_item_quantities` when the user explicitly wants to set exact quantities (e.g. "make cheeseburgers 3").
-    - Use `calculate_total` to preview totals. Always preview before asking for confirmation.
-    - NEVER call `create_order` unless the user explicitly confirms the final order (explicit confirmation examples: "yes", "confirm", "place order", "checkout now").
-    - NEVER call `create_order` with an empty order. The order must contain at least one item (quantity >= 1).
-    - When you call a tool, supply the appropriate arguments (do not leave required arguments empty).
-    - After create_order returns, present the order_id and a polite thank-you and direct the customer to payment.
-
-    When interacting with the user, be concise. Ask clarifying questions only when necessary (e.g., size/toppings) and show the cart preview when asked or before finalizing.
-    Always use only MENU item IDs when constructing orders.
-    """
-
-    # 4) messages: 1-shot example showing add -> preview -> change -> preview -> confirm -> create flow
-    messages = [
-        {"role": "system", "content": system_prompt},
-
-        # assistant greets
-        {"role": "assistant", "content": greeting_prompt}
-
-        # # user asks to add items
-        # {"role": "user", "content": "I'd like 2 Cheeseburgers and 1 Orange Juice, please."},
-
-        # # assistant calls add_or_update_cart_items
-        # {"role": "assistant", "content": "", "tool_calls": [
-        #     {"function": {"name": "add_or_update_cart_items", "arguments": {"items": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
-        # ]},
-
-        # # tool returns current cart (example)
-        # {"role": "tool", "name": "add_or_update_cart_items", "content": json.dumps([
-        #     {"item_id": 1, "quantity": 2},
-        #     {"item_id": 5, "quantity": 1}
-        # ])},
-
-        # # assistant previews totals by calling calculate_total
-        # {"role": "assistant", "content": "", "tool_calls": [
-        #     {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}])}}}
-        # ]},
-
-        # # tool returns preview (no order_id)
-        # {"role": "tool", "name": "calculate_total", "content": json.dumps({
-        #     "order_details": [
-        #         {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
-        #         {"item_id": 5, "name": "Orange Juice", "quantity": 1, "price_per_item": 1.99, "line_total": 1.99, "line_discount": 0.4, "discount_pct": 0.2}
-        #     ],
-        #     "subtotal": 13.97,
-        #     "discounts_applied": [
-        #         {"description": "10% off on Cheeseburger", "amount": -1.2},
-        #         {"description": "20% off on Orange Juice", "amount": -0.4}
-        #     ],
-        #     "total_price": 12.37
-        # })},
-
-        # # assistant asks for confirmation
-        # {"role": "assistant", "content": "Here is your preview: 2 x Cheeseburger, 1 x Orange Juice. Total $12.37 (discounts applied $1.60). Would you like to confirm and place this order? (yes/no)"},
-
-        # # user changes mind and wants to remove Orange Juice, add Coca-Cola instead
-        # {"role": "user", "content": "Please take out the Orange Juice and add 1 Coca-Cola instead."},
-
-        # # assistant calls remove and add (tool calls)
-        # {"role": "assistant", "content": "", "tool_calls": [
-        #     {"function": {"name": "remove_cart_items", "arguments": {"item_ids": json.dumps([5])}}},
-        #     {"function": {"name": "add_or_update_cart_items", "arguments": {"items": json.dumps([{"item_id": 4, "quantity": 1}])}}}
-        # ]},
-
-        # # tool returns current cart (example)
-        # {"role": "tool", "name": "remove_cart_items", "content": json.dumps([{"item_id": 1, "quantity": 2}])},
-        # {"role": "tool", "name": "add_or_update_cart_items", "content": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])},
-
-        # # assistant previews totals again
-        # {"role": "assistant", "content": "", "tool_calls": [
-        #     {"function": {"name": "calculate_total", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])}}}
-        # ]},
-
-        # # tool returns preview
-        # {"role": "tool", "name": "calculate_total", "content": json.dumps({
-        #     "order_details": [
-        #         {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99, "line_total": 11.98, "line_discount": 1.2, "discount_pct": 0.1},
-        #         {"item_id": 4, "name": "Coca-Cola", "quantity": 1, "price_per_item": 1.49, "line_total": 1.49, "line_discount": 0.15, "discount_pct": 0.1}
-        #     ],
-        #     "subtotal": 13.47,
-        #     "discounts_applied": [
-        #         {"description": "10% off on Cheeseburger", "amount": -1.2},
-        #         {"description": "10% off on Coca-Cola", "amount": -0.15}
-        #     ],
-        #     "total_price": 12.12
-        # })},
-
-        # # assistant asks confirmation again and user confirms
-        # {"role": "assistant", "content": "Preview: 2 x Cheeseburger, 1 x Coca-Cola. Total $12.12. Confirm and place order?"},
-        # {"role": "user", "content": "Yes, place order please."},
-
-        # # assistant calls create_order (finalize)
-        # {"role": "assistant", "content": "", "tool_calls": [
-        #     {"function": {"name": "create_order", "arguments": {"order": json.dumps([{"item_id": 1, "quantity": 2}, {"item_id": 4, "quantity": 1}])}}}
-        # ]},
-
-        # # tool returns saved order metadata (example)
-        # {"role": "tool", "name": "create_order", "content": json.dumps({
-        #     "order_details": [
-        #         {"item_id": 1, "name": "Cheeseburger", "quantity": 2, "price_per_item": 5.99},
-        #         {"item_id": 4, "name": "Coca-Cola", "quantity": 1, "price_per_item": 1.49}
-        #     ],
-        #     "subtotal": 13.47,
-        #     "discounts_applied": [{"description": "10% off on Cheeseburger", "amount": -1.2}, {"description": "10% off on Coca-Cola", "amount": -0.15}],
-        #     "total_price": 12.12,
-        #     "order_id": "example_order_id",
-        #     "created_at": "2025-08-11T00:00:00",
-        #     "saved_as": "orders/order_example_order_id.csv"
-        # })},
-
-        # # assistant final message
-        # {"role": "assistant", "content": "Great — your order was created with ID example_order_id. Thank you! Please proceed to the payment window."}
-    ]
-    # -----------------------------------------------------------------
-
-    # Map function names to the actual functions for dispatch
     available_tools = {
         "get_menu": get_menu,
-        "add_or_update_cart_items": add_or_update_cart_items,
+        "add_or_increase_cart_items": add_or_increase_cart_items,
         "remove_cart_items": remove_cart_items,
         "set_cart_item_quantities": set_cart_item_quantities,
         "calculate_total": calculate_total,
         "create_order": create_order
     }
+
+    system_prompt = """
+    You are a friendly, efficient fast-food restaurant receptionist who talks with customers through voice.
+    You manage customer carts and create orders.
+    You always inform to customers what you have done with their cart.
+    When speaking to customers, never mention item IDs, use item names instead.
+    Ask clarifying questions when needed (e.g., size, toppings).
+    Always preview the cart before create an order.
+
+    - Menu & Ordering Rules:
+    1. Use `get_menu` tool to show or suggest menu items or a category of items and current available discounts to customers.
+    2. Use `add_or_increase_cart_items` tool when adding new items or increasing existing quantities.
+    3. Use `remove_cart_items` when removing specific items from the user cart.
+    4. Use `set_cart_item_quantities` when setting exact item quantities.
+    5. Use `calculate_total` to preview the order total, ALWAYS preview the order before asking for confirmation.
+    6. Only call `create_order` after explicit customer confirmation (e.g., "yes", "confirm", "place order", "checkout now").
+    7. Never call `create_order` with an empty cart, in this case, ask the customer again.
+    8. When calling any tool, always pass all required arguments, never leave them empty.
+
+    - After Order Placement:
+    -- Once `create_order` returns, present the final total, thank the customer politely, and direct them to payment.
+    -- End the conversation after payment instructions.
+    
+    - Here is the MENU:
+    {MENU_DATA}
+    """
+
+
+    greeting_prompt = "Welcome! I'm here to take your order — what would you like to eat today?"
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "assistant", "content": greeting_prompt}
+    ]
+
 
     print("-----------FastFood Restaurant-------------")
     print(f"assistant> {greeting_prompt}")
@@ -522,6 +531,14 @@ if __name__ == "__main__":
                     "name": function_name,
                     "content": json.dumps(tool_result, ensure_ascii=False)
                 })
+                # Deep copy so we don't mutate the original
+                temp = copy.deepcopy(messages[-1])
+
+                # Parse content so it's a nested object, not a string
+                temp["content"] = json.loads(temp["content"])
+
+                # Now pretty-print
+                print(json.dumps(temp, indent=4, ensure_ascii=False))
 
             followup = llama(messages=messages, tools=default_tools)
             print(json.dumps(followup, indent=4))

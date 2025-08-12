@@ -4,9 +4,7 @@ import json
 # --- Example usage (simple) ---
 if __name__ == "__main__":
     # json.dumps()
-    sample_order = [{"item_id": 1, "quantity": 2}, {"item_id": 5, "quantity": 1}]
-    preview = calculate_total(sample_order)
-    print("Preview:", json.dumps(preview, indent=4))
-
-    final = create_order(sample_order)
-    print("Saved order:", json.dumps(final, indent=4))
+    raw_items = r"[{'item_id': 4, 'quantity': 2}]"
+    out = safe_parse_items(raw_items)
+    print(out)
+    print(type(out))
